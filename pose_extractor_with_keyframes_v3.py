@@ -5,6 +5,7 @@ import mediapipe as mp
 import numpy as np
 import pandas as pd
 from mediapipe.framework.formats import landmark_pb2
+import cv2
 
 mp_pose = mp.solutions.pose
 
@@ -89,11 +90,13 @@ def find_release_frame(landmarks_seq, target_z):
 
 
 def extract_four_keyframes(video_path, output_dir, statcast_df, vis_dir="output_vis"):
+    
     filename = os.path.splitext(os.path.basename(video_path))[0]
     row = statcast_df[statcast_df["Filename"].str.contains(filename)].iloc[0]
     pitch_type = row["pitch_type"]
     pitcher = row["player_name"] if "player_name" in row else row["pitcher"]
     is_strike = 1 if "strike" in row["description"].lower() else 0
+    Landing_point = row['zone']
     release_z = row["release_pos_z"] if "release_pos_z" in row else None
 
     cap = cv2.VideoCapture(video_path)
@@ -117,7 +120,7 @@ def extract_four_keyframes(video_path, output_dir, statcast_df, vis_dir="output_
     if total_frames < 60:
         print(f"❌ 幀數過少：{video_path}")
         return
-
+    
     margin = min(50, total_frames // 3)
     release_idx = None
     if release_z:
@@ -133,8 +136,12 @@ def extract_four_keyframes(video_path, output_dir, statcast_df, vis_dir="output_
             for i in range(1, total_frames)
         ]
         release_idx = int(np.argmax(velocities)) + 1
-
+    print(release_idx,total_frames)
+    cv2.imshow("Frame", frames[release_idx])  # Display the frame in a window named "Frame"
+    cv2.waitKey(0) 
     indices = [release_idx - 20, release_idx - 5, release_idx, release_idx + 10]
+    #for i in indices:
+    #    assert i < total_frames
     names = ["foot", "arm", "release", "hip"]
 
     features = []
@@ -142,7 +149,7 @@ def extract_four_keyframes(video_path, output_dir, statcast_df, vis_dir="output_
 
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(vis_dir, exist_ok=True)
-
+    
     for name, idx in zip(names, indices):
         start = max(idx - margin, 0)
         end = min(idx + margin, total_frames)
@@ -151,7 +158,7 @@ def extract_four_keyframes(video_path, output_dir, statcast_df, vis_dir="output_
         if pad_len > 0:
             seq += [seq[-1]] * pad_len
         seq = seq[:100]
-
+        
         f1 = [calc_stride_angle(lm) for lm in seq]
         f2 = [calc_throwing_angle(lm) for lm in seq]
         f3 = [calc_arm_symmetry(lm) for lm in seq]
@@ -169,17 +176,15 @@ def extract_four_keyframes(video_path, output_dir, statcast_df, vis_dir="output_
         landmark_proto.landmark.extend(frame_landmarks[idx])
         vis_img = draw_pose(frames[idx], landmark_proto)
         cv2.imwrite(os.path.join(vis_dir, f"{filename}_{name}.jpg"), vis_img)
-
         csv_rows.append(
             [filename, name]
             + [np.mean(f) for f in [f1, f2, f3, f4, f5, f6, f7, f8, f9, f10]]
-            + [pitch_type, pitcher, is_strike]
+            + [pitch_type, pitcher, is_strike, Landing_point]
         )
-
     features = np.transpose(features, (1, 2, 0))  # (4, 100, 10)
     features = features.reshape(4, -1)  # (4, 1000)
     np.save(os.path.join(output_dir, filename + ".npy"), features)
-
+    
     df = pd.DataFrame(
         csv_rows,
         columns=[
@@ -198,6 +203,7 @@ def extract_four_keyframes(video_path, output_dir, statcast_df, vis_dir="output_
             "pitch_type",
             "pitcher",
             "is_strike",
+            "Landing_point",
         ],
     )
     df.to_csv(os.path.join(output_dir, filename + ".csv"), index=False)
